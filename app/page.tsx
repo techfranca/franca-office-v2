@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import Image from "next/image"; 
+import { useState, useEffect, useCallback, useRef } from "react";
+import Image from "next/image";
+import { useNotifications, NotificationToasts, NewUserBadge } from "./components/NotificationSystem"; 
 import {
   LiveKitRoom,
   ParticipantTile,
@@ -10,6 +11,7 @@ import {
   useTracks,
   useRoomContext,
   useLocalParticipant,
+  useRemoteParticipants,
 } from "@livekit/components-react";
 import "@livekit/components-styles";
 import { Track } from "livekit-client";
@@ -61,6 +63,14 @@ export default function Home() {
   
   const [myStatus, setMyStatus] = useState<UserStatus>('available');
   const [showStatusMenu, setShowStatusMenu] = useState(false);
+  const [remoteStatuses, setRemoteStatuses] = useState<Record<string, UserStatus>>({});
+  
+  // 🔔 Sistema de Notificações
+  const { notifications, newUsers, notify, removeNotification } = useNotifications({
+    enabled: true,
+    soundEnabled: true,
+    desktopEnabled: false
+  });
 
   // Radar de Presença
   useEffect(() => {
@@ -86,7 +96,9 @@ export default function Home() {
     }
 
     setAuthenticatedUser(usernameInput);
-    localStorage.setItem("office_user", usernameInput);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem("office_user", usernameInput);
+    }
     setHasJoined(true);
     joinRoom("reuniao", usernameInput);
   }
@@ -106,14 +118,12 @@ export default function Home() {
     setOccupancy(prev => {
       const newOccupancy = { ...prev };
       
-      // 🛑 O FIX ESTÁ AQUI: Verifica se é um array antes de tentar filtrar
       Object.keys(newOccupancy).forEach(key => {
         if (Array.isArray(newOccupancy[key])) { 
           newOccupancy[key] = newOccupancy[key].filter(u => u !== user);
         }
       });
 
-      // Adiciona na nova sala
       if (!newOccupancy[roomName]) newOccupancy[roomName] = [];
       if (!newOccupancy[roomName].includes(user)) newOccupancy[roomName].push(user);
       return newOccupancy;
@@ -131,7 +141,9 @@ export default function Home() {
     if ((window as any).currentLiveKit) {
       (window as any).currentLiveKit.disconnect();
     }
-    localStorage.removeItem("office_user");
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem("office_user");
+    }
     setHasJoined(false);
     setToken("");
     setAuthenticatedUser("");
@@ -298,16 +310,19 @@ export default function Home() {
                   <div className="flex items-center gap-1 pl-8 mt-1 flex-wrap">
                     {usersInRoom.map((u, idx) => {
                       const isMe = u === authenticatedUser;
-                      const statusColor = isMe ? STATUS_CONFIG[myStatus].color : "bg-[#7DE08D]";
+                      const userStatus = isMe ? myStatus : (remoteStatuses[u] || 'available');
+                      const statusColor = STATUS_CONFIG[userStatus].color;
+                      const isNewUser = newUsers.has(u);
                       
                       return (
                         <div 
                           key={idx} 
                           className="w-5 h-5 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center text-[8px] font-bold text-white shadow-sm relative"
-                          title={u}
+                          title={`${u} - ${STATUS_CONFIG[userStatus].label}`}
                         >
                           {u.charAt(0).toUpperCase()}
                           <span className={`absolute -top-0.5 -right-0.5 w-1.5 h-1.5 ${statusColor} rounded-full border border-zinc-900`}></span>
+                          {isNewUser && <NewUserBadge userName={u} />}
                         </div>
                       );
                     })}
@@ -359,6 +374,8 @@ export default function Home() {
             >
               <RoomActiveTracker />
               <LocalStatusUpdater status={myStatus} />
+              <RemoteStatusTracker onStatusUpdate={setRemoteStatuses} />
+              <NotificationTracker currentRoom={currentRoom} onNotify={notify} />
               
               <div className="flex-1 rounded-xl overflow-hidden border border-zinc-900 bg-card/80 shadow-2xl relative min-h-0 backdrop-blur-sm">
                  <MyVideoConference />
@@ -375,6 +392,12 @@ export default function Home() {
           )}
         </div>
       </main>
+      
+      {/* 🔔 Toasts de Notificação */}
+      <NotificationToasts 
+        notifications={notifications} 
+        onRemove={removeNotification} 
+      />
     </div>
   );
 }
@@ -390,13 +413,145 @@ function RoomActiveTracker() {
   return null;
 }
 
-function LocalStatusUpdater({ status }: { status: string }) {
+// 🔥 NOVO: Atualiza metadata do participante local para broadcast de status
+function LocalStatusUpdater({ status }: { status: UserStatus }) {
   const { localParticipant } = useLocalParticipant();
+  const room = useRoomContext();
+  const [isConnected, setIsConnected] = useState(false);
+  
+  // Monitora estado da conexão
   useEffect(() => {
-    if (localParticipant) {
-      localParticipant.setMetadata(status);
+    if (!room) return;
+    
+    const handleConnected = () => setIsConnected(true);
+    const handleDisconnected = () => setIsConnected(false);
+    
+    if (room.state === 'connected') {
+      setIsConnected(true);
     }
-  }, [localParticipant, status]);
+    
+    room.on('connected', handleConnected);
+    room.on('disconnected', handleDisconnected);
+    
+    return () => {
+      room.off('connected', handleConnected);
+      room.off('disconnected', handleDisconnected);
+    };
+  }, [room]);
+  
+  // Atualiza metadata quando conectado
+  useEffect(() => {
+    if (!localParticipant || !isConnected) return;
+    
+    const updateMetadata = async () => {
+      try {
+        const metadata = JSON.stringify({ status });
+        await Promise.race([
+          localParticipant.setMetadata(metadata),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000))
+        ]);
+      } catch (error) {
+        // Falha silenciosa - não quebra a UI
+        console.debug('Status update skipped:', error instanceof Error ? error.message : 'unknown');
+      }
+    };
+    
+    // Pequeno delay para garantir que a conexão está estável
+    const timeoutId = setTimeout(updateMetadata, 500);
+    return () => clearTimeout(timeoutId);
+    
+  }, [localParticipant, status, isConnected]);
+  
+  return null;
+}
+
+// 🔔 Rastreia entradas/saídas para notificações
+function NotificationTracker({ 
+  currentRoom, 
+  onNotify 
+}: { 
+  currentRoom: string;
+  onNotify: (type: 'join' | 'leave', userName: string, roomName: string) => void;
+}) {
+  const room = useRoomContext();
+  const remoteParticipants = useRemoteParticipants();
+  const previousParticipantsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!room) return;
+
+    const currentParticipants = new Set(
+      remoteParticipants.map(p => p.identity)
+    );
+
+    const previous = previousParticipantsRef.current;
+
+    // Detecta ENTRADAS
+    currentParticipants.forEach(identity => {
+      if (!previous.has(identity)) {
+        const roomName = ROOMS.find(r => r.id === currentRoom)?.name || currentRoom;
+        onNotify('join', identity, roomName);
+      }
+    });
+
+    // Detecta SAÍDAS
+    previous.forEach(identity => {
+      if (!currentParticipants.has(identity)) {
+        const roomName = ROOMS.find(r => r.id === currentRoom)?.name || currentRoom;
+        onNotify('leave', identity, roomName);
+      }
+    });
+
+    // Atualiza a referência
+    previousParticipantsRef.current = currentParticipants;
+    
+  }, [remoteParticipants, room, currentRoom, onNotify]);
+
+  return null;
+}
+
+// 🔥 NOVO: Rastreia status de participantes remotos
+function RemoteStatusTracker({ onStatusUpdate }: { onStatusUpdate: (statuses: Record<string, UserStatus>) => void }) {
+  const room = useRoomContext();
+  const remoteParticipants = useRemoteParticipants();
+
+  useEffect(() => {
+    if (!room) return;
+
+    const updateStatuses = () => {
+      const statuses: Record<string, UserStatus> = {};
+      
+      room.remoteParticipants.forEach(participant => {
+        if (participant.metadata) {
+          try {
+            const metadata = JSON.parse(participant.metadata);
+            statuses[participant.identity] = metadata.status || 'available';
+          } catch (e) {
+            statuses[participant.identity] = 'available';
+          }
+        } else {
+          statuses[participant.identity] = 'available';
+        }
+      });
+      
+      onStatusUpdate(statuses);
+    };
+
+    // Atualiza quando metadata mudar
+    room.on('participantMetadataChanged', updateStatuses);
+    room.on('participantConnected', updateStatuses);
+    room.on('participantDisconnected', updateStatuses);
+
+    // Carrega status inicial
+    updateStatuses();
+
+    return () => {
+      room.off('participantMetadataChanged', updateStatuses);
+      room.off('participantConnected', updateStatuses);
+      room.off('participantDisconnected', updateStatuses);
+    };
+  }, [room, onStatusUpdate, remoteParticipants]);
+
   return null;
 }
 
@@ -409,6 +564,43 @@ function MyVideoConference() {
     ],
     { onlySubscribed: false },
   );
+  
+  const remoteParticipants = useRemoteParticipants();
+  const room = useRoomContext();
+  const [participantMetadata, setParticipantMetadata] = useState<Record<string, any>>({});
+
+  // 🔥 LISTENER: Detecta mudanças de metadata em tempo real
+  useEffect(() => {
+    if (!room) return;
+
+    const handleMetadataChanged = (metadata: string | undefined, participant: any) => {
+      if (metadata) {
+        try {
+          const parsed = JSON.parse(metadata);
+          setParticipantMetadata(prev => ({
+            ...prev,
+            [participant.identity]: parsed
+          }));
+        } catch (e) {
+          console.debug('Invalid metadata:', e);
+        }
+      }
+    };
+
+    // Listener para mudanças de metadata
+    room.on('participantMetadataChanged', handleMetadataChanged);
+
+    // Carrega metadata inicial de todos os participantes
+    room.remoteParticipants.forEach(participant => {
+      if (participant.metadata) {
+        handleMetadataChanged(participant.metadata, participant);
+      }
+    });
+
+    return () => {
+      room.off('participantMetadataChanged', handleMetadataChanged);
+    };
+  }, [room]);
 
   const screenShareTrack = tracks.find(t => t.source === Track.Source.ScreenShare);
 
@@ -428,14 +620,26 @@ function MyVideoConference() {
         </div>
         
         <div className="h-32 flex gap-2 overflow-x-auto pb-1">
-          {otherTracks.map((track) => (
-            <div key={track.publication?.trackSid || track.participant.identity} className="w-48 shrink-0">
-              <ParticipantTile 
-                trackRef={track}
-                className="rounded-lg overflow-hidden border border-zinc-800 bg-card shadow-lg h-full"
-              />
-            </div>
-          ))}
+          {otherTracks.map((track) => {
+            const participant = track.participant;
+            const metadata = participantMetadata[participant.identity] || 
+                           (participant.metadata ? JSON.parse(participant.metadata) : null);
+            const userStatus = metadata?.status || 'available';
+            
+            return (
+              <div key={track.publication?.trackSid || track.participant.identity} className="w-48 shrink-0 relative">
+                <ParticipantTile 
+                  trackRef={track}
+                  className="rounded-lg overflow-hidden border border-zinc-800 bg-card shadow-lg h-full"
+                />
+                {/* Badge de Status */}
+                <div className={`absolute top-2 right-2 px-2 py-1 rounded-full text-[8px] font-bold ${STATUS_CONFIG[userStatus as UserStatus].color} flex items-center gap-1 backdrop-blur-sm`}>
+                  {STATUS_CONFIG[userStatus as UserStatus].icon}
+                  <span className="text-black">{STATUS_CONFIG[userStatus as UserStatus].label}</span>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
     );
@@ -447,13 +651,26 @@ function MyVideoConference() {
 
   return (
     <div className={`grid ${gridClass} gap-4 h-full w-full p-2`}>
-      {tracks.map((track) => (
-        <ParticipantTile 
-          key={track.publication?.trackSid || track.participant.identity} 
-          trackRef={track}
-          className="rounded-lg overflow-hidden border border-zinc-800 bg-card shadow-lg"
-        />
-      ))}
+      {tracks.map((track) => {
+        const participant = track.participant;
+        const metadata = participantMetadata[participant.identity] || 
+                       (participant.metadata ? JSON.parse(participant.metadata) : null);
+        const userStatus = metadata?.status || 'available';
+        
+        return (
+          <div key={track.publication?.trackSid || track.participant.identity} className="relative">
+            <ParticipantTile 
+              trackRef={track}
+              className="rounded-lg overflow-hidden border border-zinc-800 bg-card shadow-lg h-full"
+            />
+            {/* Badge de Status */}
+            <div className={`absolute top-2 right-2 px-2 py-1 rounded-full text-[8px] font-bold ${STATUS_CONFIG[userStatus as UserStatus].color} flex items-center gap-1 backdrop-blur-sm`}>
+              {STATUS_CONFIG[userStatus as UserStatus].icon}
+              <span className="text-black">{STATUS_CONFIG[userStatus as UserStatus].label}</span>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
