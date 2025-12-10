@@ -17,8 +17,8 @@ import "@livekit/components-styles";
 import { Track } from "livekit-client";
 import { 
   Coffee, Briefcase, Monitor, 
-  ArrowRight, Lock, User, ChevronDown, LogOut,
-  CheckCircle2, MinusCircle, Utensils
+  ArrowRight, Lock, Unlock, User, ChevronDown, LogOut,
+  CheckCircle2, MinusCircle, Utensils, Shield
 } from "lucide-react";
 
 // 🔐 CONFIGURAÇÃO DOS USUÁRIOS
@@ -33,6 +33,7 @@ const ALLOWED_USERS: Record<string, string> = {
 // 🏢 CONFIGURAÇÃO DAS SALAS
 const ROOMS = [
   { id: "reuniao", name: "Sala de Reunião", icon: <Briefcase className="w-5 h-5" /> },
+  { id: "reuniao-privada", name: "Sala de Reunião Privada", icon: <Shield className="w-5 h-5" />, isPrivate: true },
   { id: "cafe", name: "Área do Café", icon: <Coffee className="w-5 h-5" /> },
   { id: "gabriel", name: "Sala do Gabriel", icon: <Monitor className="w-5 h-5" /> },
   { id: "bruna", name: "Sala da Bruna", icon: <Monitor className="w-5 h-5" /> },
@@ -64,6 +65,9 @@ export default function Home() {
   const [myStatus, setMyStatus] = useState<UserStatus>('available');
   const [showStatusMenu, setShowStatusMenu] = useState(false);
   const [remoteStatuses, setRemoteStatuses] = useState<Record<string, UserStatus>>({});
+  
+  // 🔒 Estado da sala privada (sincronizado via LiveKit)
+  const [privateRoomLocked, setPrivateRoomLocked] = useState(false);
   
   // 🔔 Sistema de Notificações
   const { notifications, newUsers, notify, removeNotification } = useNotifications({
@@ -106,15 +110,32 @@ export default function Home() {
   async function joinRoom(roomName: string, userNameToUse?: string) {
     const user = userNameToUse || authenticatedUser;
     
-    // Desconecta da sala anterior
+    // 🔒 BLOQUEIO: Impede entrada na sala privada se estiver trancada
+    if (roomName === "reuniao-privada" && privateRoomLocked && currentRoom !== "reuniao-privada") {
+      notify('leave', '🔒 Sala Privada Trancada', 'Apenas membros dentro podem acessar');
+      return;
+    }
+    
+    // 1️⃣ LIMPA O TOKEN (força desmontagem do LiveKitRoom)
+    setToken("");
+    
+    // 2️⃣ Aguarda um frame para garantir que o componente desmontou
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // 3️⃣ Desconecta da sala anterior (se existir)
     if ((window as any).currentLiveKit) {
       try {
         await (window as any).currentLiveKit.disconnect();
         (window as any).currentLiveKit = null;
-      } catch (e) { console.error(e); }
+      } catch (e) { 
+        console.error("Erro ao desconectar:", e); 
+      }
     }
+    
+    // 4️⃣ Aguarda um pouco mais para garantir desconexão completa
+    await new Promise(resolve => setTimeout(resolve, 200));
 
-    // Atualização Visual Imediata (Otimista)
+    // 5️⃣ Atualização Visual Imediata (Otimista)
     setOccupancy(prev => {
       const newOccupancy = { ...prev };
       
@@ -129,12 +150,17 @@ export default function Home() {
       return newOccupancy;
     });
 
+    // 6️⃣ Atualiza a sala atual
+    setCurrentRoom(roomName);
+
+    // 7️⃣ Gera novo token e conecta
     try {
-      setCurrentRoom(roomName);
       const resp = await fetch(`/api/token?room=${roomName}&username=${user}`);
       const data = await resp.json();
       setToken(data.token);
-    } catch (e) { console.error(e); }
+    } catch (e) { 
+      console.error("Erro ao gerar token:", e); 
+    }
   }
 
   function handleLogout() {
@@ -150,6 +176,7 @@ export default function Home() {
   }
 
   const activeRoomData = ROOMS.find(r => r.id === currentRoom);
+  const isInPrivateRoom = currentRoom === "reuniao-privada";
 
   // 🟢 TELA DE LOGIN
   if (!hasJoined) {
@@ -289,20 +316,26 @@ export default function Home() {
           {ROOMS.map((room) => {
             const isActive = currentRoom === room.id;
             const usersInRoom = occupancy[room.id] || [];
+            const isPrivateRoom = room.id === "reuniao-privada";
+            const isLocked = isPrivateRoom && privateRoomLocked;
             
             return (
               <button
                 key={room.id}
                 onClick={() => joinRoom(room.id)}
+                disabled={isLocked && !isActive}
                 className={`w-full flex flex-col items-start gap-1 px-3 py-2.5 rounded-lg transition-all duration-200 group relative
                   ${isActive 
                     ? "bg-[#7DE08D]/10 text-[#7DE08D] border border-[#7DE08D]/20 shadow-[0_0_15px_rgba(125,224,141,0.1)]" 
+                    : isLocked
+                    ? "text-zinc-700 border border-transparent cursor-not-allowed opacity-50"
                     : "text-zinc-500 hover:bg-white/5 hover:text-zinc-200 border border-transparent"
                   }`}
               >
                 <div className="flex items-center gap-3 w-full">
                   <span className={isActive ? "text-[#7DE08D]" : "group-hover:text-white transition-colors"}>{room.icon}</span>
                   <span className="font-medium text-sm">{room.name}</span>
+                  {isLocked && !isActive && <Lock className="w-3 h-3 ml-auto text-red-500" />}
                   {isActive && <span className="ml-auto w-1.5 h-1.5 rounded-full bg-[#7DE08D] shadow-[0_0_8px_rgba(125,224,141,0.6)]" />}
                 </div>
 
@@ -344,6 +377,12 @@ export default function Home() {
               {activeRoomData?.icon}
             </div>
             <h2 className="text-sm font-bold text-white">{activeRoomData?.name}</h2>
+            {isInPrivateRoom && privateRoomLocked && (
+              <div className="flex items-center gap-1 px-2 py-0.5 rounded bg-red-500/10 border border-red-500/20">
+                <Lock className="w-3 h-3 text-red-500" />
+                <span className="text-[10px] font-bold text-red-500">TRANCADA</span>
+              </div>
+            )}
           </div>
           
           <div className="flex items-center gap-2">
@@ -376,6 +415,11 @@ export default function Home() {
               <LocalStatusUpdater status={myStatus} />
               <RemoteStatusTracker onStatusUpdate={setRemoteStatuses} />
               <NotificationTracker currentRoom={currentRoom} onNotify={notify} />
+              <PrivateRoomLockManager 
+                currentRoom={currentRoom}
+                isLocked={privateRoomLocked}
+                onLockChange={setPrivateRoomLocked}
+              />
               
               <div className="flex-1 rounded-xl overflow-hidden border border-zinc-900 bg-card/80 shadow-2xl relative min-h-0 backdrop-blur-sm">
                  <MyVideoConference />
@@ -413,13 +457,11 @@ function RoomActiveTracker() {
   return null;
 }
 
-// 🔥 NOVO: Atualiza metadata do participante local para broadcast de status
 function LocalStatusUpdater({ status }: { status: UserStatus }) {
   const { localParticipant } = useLocalParticipant();
   const room = useRoomContext();
   const [isConnected, setIsConnected] = useState(false);
   
-  // Monitora estado da conexão
   useEffect(() => {
     if (!room) return;
     
@@ -439,7 +481,6 @@ function LocalStatusUpdater({ status }: { status: UserStatus }) {
     };
   }, [room]);
   
-  // Atualiza metadata quando conectado
   useEffect(() => {
     if (!localParticipant || !isConnected) return;
     
@@ -451,12 +492,10 @@ function LocalStatusUpdater({ status }: { status: UserStatus }) {
           new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000))
         ]);
       } catch (error) {
-        // Falha silenciosa - não quebra a UI
         console.debug('Status update skipped:', error instanceof Error ? error.message : 'unknown');
       }
     };
     
-    // Pequeno delay para garantir que a conexão está estável
     const timeoutId = setTimeout(updateMetadata, 500);
     return () => clearTimeout(timeoutId);
     
@@ -465,7 +504,6 @@ function LocalStatusUpdater({ status }: { status: UserStatus }) {
   return null;
 }
 
-// 🔔 Rastreia entradas/saídas para notificações
 function NotificationTracker({ 
   currentRoom, 
   onNotify 
@@ -486,7 +524,6 @@ function NotificationTracker({
 
     const previous = previousParticipantsRef.current;
 
-    // Detecta ENTRADAS
     currentParticipants.forEach(identity => {
       if (!previous.has(identity)) {
         const roomName = ROOMS.find(r => r.id === currentRoom)?.name || currentRoom;
@@ -494,7 +531,6 @@ function NotificationTracker({
       }
     });
 
-    // Detecta SAÍDAS
     previous.forEach(identity => {
       if (!currentParticipants.has(identity)) {
         const roomName = ROOMS.find(r => r.id === currentRoom)?.name || currentRoom;
@@ -502,7 +538,6 @@ function NotificationTracker({
       }
     });
 
-    // Atualiza a referência
     previousParticipantsRef.current = currentParticipants;
     
   }, [remoteParticipants, room, currentRoom, onNotify]);
@@ -510,7 +545,6 @@ function NotificationTracker({
   return null;
 }
 
-// 🔥 NOVO: Rastreia status de participantes remotos
 function RemoteStatusTracker({ onStatusUpdate }: { onStatusUpdate: (statuses: Record<string, UserStatus>) => void }) {
   const room = useRoomContext();
   const remoteParticipants = useRemoteParticipants();
@@ -537,12 +571,10 @@ function RemoteStatusTracker({ onStatusUpdate }: { onStatusUpdate: (statuses: Re
       onStatusUpdate(statuses);
     };
 
-    // Atualiza quando metadata mudar
     room.on('participantMetadataChanged', updateStatuses);
     room.on('participantConnected', updateStatuses);
     room.on('participantDisconnected', updateStatuses);
 
-    // Carrega status inicial
     updateStatuses();
 
     return () => {
@@ -555,7 +587,110 @@ function RemoteStatusTracker({ onStatusUpdate }: { onStatusUpdate: (statuses: Re
   return null;
 }
 
-// 🧱 GRID INTELIGENTE (Detecta Screen Share)
+// 🔒 GERENCIADOR DE LOCK DA SALA PRIVADA (dentro do LiveKitRoom)
+function PrivateRoomLockManager({ 
+  currentRoom,
+  isLocked,
+  onLockChange 
+}: { 
+  currentRoom: string;
+  isLocked: boolean;
+  onLockChange: (locked: boolean) => void;
+}) {
+  const room = useRoomContext();
+  const { localParticipant } = useLocalParticipant();
+  const [showButton, setShowButton] = useState(false);
+
+  // Mostra botão apenas quando estiver na sala privada
+  useEffect(() => {
+    setShowButton(currentRoom === 'reuniao-privada');
+  }, [currentRoom]);
+
+  // Sincroniza o estado do lock lendo metadata de todos os participantes
+  useEffect(() => {
+    if (!room || currentRoom !== 'reuniao-privada') return;
+
+    const updateLockStatus = () => {
+      const participants = Array.from(room.remoteParticipants.values());
+      const localP = room.localParticipant;
+      
+      let foundLockStatus = false;
+      
+      [localP, ...participants].forEach(participant => {
+        if (participant?.metadata) {
+          try {
+            const metadata = JSON.parse(participant.metadata);
+            if (metadata.roomLocked !== undefined) {
+              onLockChange(metadata.roomLocked);
+              foundLockStatus = true;
+            }
+          } catch (e) {
+            // Ignora
+          }
+        }
+      });
+
+      if (!foundLockStatus) {
+        onLockChange(false);
+      }
+    };
+
+    room.on('participantMetadataChanged', updateLockStatus);
+    room.on('participantConnected', updateLockStatus);
+    room.on('participantDisconnected', updateLockStatus);
+
+    updateLockStatus();
+
+    return () => {
+      room.off('participantMetadataChanged', updateLockStatus);
+      room.off('participantConnected', updateLockStatus);
+      room.off('participantDisconnected', updateLockStatus);
+    };
+  }, [room, currentRoom, onLockChange]);
+
+  const toggleLock = async () => {
+    if (!localParticipant || !room) return;
+
+    const newLockState = !isLocked;
+    
+    try {
+      const currentMetadata = localParticipant.metadata 
+        ? JSON.parse(localParticipant.metadata) 
+        : {};
+      
+      const newMetadata = {
+        ...currentMetadata,
+        roomLocked: newLockState
+      };
+
+      await localParticipant.setMetadata(JSON.stringify(newMetadata));
+      onLockChange(newLockState);
+    } catch (error) {
+      console.error('Erro ao atualizar lock:', error);
+    }
+  };
+
+  if (!showButton) return null;
+
+  return (
+    <div className="absolute top-4 right-4 z-50">
+      <button
+        onClick={toggleLock}
+        className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border transition-all shadow-lg ${
+          isLocked 
+            ? 'bg-red-500/10 border-red-500/20 text-red-500 hover:bg-red-500/20' 
+            : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:bg-zinc-700'
+        }`}
+      >
+        {isLocked ? <Lock className="w-4 h-4" /> : <Unlock className="w-4 h-4" />}
+        <span className="text-[10px] font-bold uppercase tracking-wide">
+          {isLocked ? 'Trancada' : 'Aberta'}
+        </span>
+      </button>
+    </div>
+  );
+}
+
 function MyVideoConference() {
   const tracks = useTracks(
     [
@@ -569,7 +704,6 @@ function MyVideoConference() {
   const room = useRoomContext();
   const [participantMetadata, setParticipantMetadata] = useState<Record<string, any>>({});
 
-  // 🔥 LISTENER: Detecta mudanças de metadata em tempo real
   useEffect(() => {
     if (!room) return;
 
@@ -587,10 +721,8 @@ function MyVideoConference() {
       }
     };
 
-    // Listener para mudanças de metadata
     room.on('participantMetadataChanged', handleMetadataChanged);
 
-    // Carrega metadata inicial de todos os participantes
     room.remoteParticipants.forEach(participant => {
       if (participant.metadata) {
         handleMetadataChanged(participant.metadata, participant);
@@ -632,7 +764,6 @@ function MyVideoConference() {
                   trackRef={track}
                   className="rounded-lg overflow-hidden border border-zinc-800 bg-card shadow-lg h-full"
                 />
-                {/* Badge de Status */}
                 <div className={`absolute top-2 right-2 px-2 py-1 rounded-full text-[8px] font-bold ${STATUS_CONFIG[userStatus as UserStatus].color} flex items-center gap-1 backdrop-blur-sm`}>
                   {STATUS_CONFIG[userStatus as UserStatus].icon}
                   <span className="text-black">{STATUS_CONFIG[userStatus as UserStatus].label}</span>
@@ -645,25 +776,47 @@ function MyVideoConference() {
     );
   }
 
-  const gridClass = tracks.length <= 1 ? "grid-cols-1" : 
-                    tracks.length <= 4 ? "grid-cols-2" : 
-                    "grid-cols-3";
+  const getGridLayout = (count: number) => {
+    if (count === 1) return { cols: 1, rows: 1 };
+    if (count === 2) return { cols: 2, rows: 1 };
+    if (count === 3) return { cols: 3, rows: 1 };
+    if (count === 4) return { cols: 2, rows: 2 };
+    if (count === 5) return { cols: 3, rows: 2 };
+    if (count === 6) return { cols: 3, rows: 2 };
+    return { cols: 3, rows: Math.ceil(count / 3) };
+  };
 
+  const layout = getGridLayout(tracks.length);
+  
   return (
-    <div className={`grid ${gridClass} gap-4 h-full w-full p-2`}>
-      {tracks.map((track) => {
+    <div 
+      className="grid h-full w-full p-2 gap-4"
+      style={{
+        gridTemplateColumns: `repeat(${layout.cols}, 1fr)`,
+        gridTemplateRows: `repeat(${layout.rows}, 1fr)`,
+      }}
+    >
+      {tracks.map((track, index) => {
         const participant = track.participant;
         const metadata = participantMetadata[participant.identity] || 
                        (participant.metadata ? JSON.parse(participant.metadata) : null);
         const userStatus = metadata?.status || 'available';
         
+        const isLastOdd = tracks.length % 2 !== 0 && index === tracks.length - 1 && tracks.length > 2;
+        
         return (
-          <div key={track.publication?.trackSid || track.participant.identity} className="relative">
+          <div 
+            key={track.publication?.trackSid || track.participant.identity} 
+            className="relative"
+            style={isLastOdd ? {
+              gridColumn: `span ${Math.min(layout.cols, 2)}`,
+              gridColumnStart: layout.cols === 3 ? 2 : 1
+            } : undefined}
+          >
             <ParticipantTile 
               trackRef={track}
-              className="rounded-lg overflow-hidden border border-zinc-800 bg-card shadow-lg h-full"
+              className="rounded-lg overflow-hidden border border-zinc-800 bg-card shadow-lg h-full w-full"
             />
-            {/* Badge de Status */}
             <div className={`absolute top-2 right-2 px-2 py-1 rounded-full text-[8px] font-bold ${STATUS_CONFIG[userStatus as UserStatus].color} flex items-center gap-1 backdrop-blur-sm`}>
               {STATUS_CONFIG[userStatus as UserStatus].icon}
               <span className="text-black">{STATUS_CONFIG[userStatus as UserStatus].label}</span>

@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LiveKit Connection Test</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      max-width: 800px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #1a1a1a;
+      color: #fff;
+    }
+    .log {
+      background: #2a2a2a;
+      padding: 20px;
+      border-radius: 8px;
+      margin: 20px 0;
+      font-family: 'Courier New', monospace;
+      max-height: 500px;
+      overflow-y: auto;
+    }
+    .success { color: #4ade80; }
+    .error { color: #f87171; }
+    .info { color: #60a5fa; }
+    button {
+      background: #3b82f6;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 16px;
+      margin: 10px 0;
+    }
+    button:hover {
+      background: #2563eb;
+    }
+    input {
+      width: 100%;
+      padding: 10px;
+      margin: 5px 0;
+      background: #2a2a2a;
+      border: 1px solid #444;
+      color: #fff;
+      border-radius: 4px;
+      font-family: monospace;
+    }
+    label {
+      display: block;
+      margin-top: 10px;
+      color: #9ca3af;
+    }
+  </style>
+</head>
+<body>
+  <h1>🧪 LiveKit Connection Test</h1>
+  
+  <div>
+    <label>API Key:</label>
+    <input type="text" id="apiKey" value="API4cEcSV9bUBAg">
+    
+    <label>API Secret:</label>
+    <input type="password" id="apiSecret" placeholder="1LpKtxS5rrNF8uyf8AXwdr5m7gC4PpeZCTE1Cxtq7bl">
+    
+    <label>WebSocket URL:</label>
+    <input type="text" id="wsUrl" value="wss://franca-office-5d2p1cgg.livekit.cloud">
+    
+    <button onclick="testConnection()">🚀 Testar Conexão</button>
+  </div>
+
+  <div class="log" id="log"></div>
+
+  <script src="https://unpkg.com/livekit-client@2.16.0/dist/livekit-client.umd.js"></script>
+  <script src="https://unpkg.com/jose@5.1.3/dist/browser/index.js"></script>
+  
+  <script>
+    const log = document.getElementById('log');
+    
+    function addLog(message, type = 'info') {
+      const time = new Date().toLocaleTimeString();
+      const className = type === 'error' ? 'error' : type === 'success' ? 'success' : 'info';
+      log.innerHTML += `<div class="${className}">[${time}] ${message}</div>`;
+      log.scrollTop = log.scrollHeight;
+    }
+
+    async function generateToken(apiKey, apiSecret) {
+      addLog('🔐 Gerando token JWT...', 'info');
+      
+      const payload = {
+        name: 'Test User',
+        video: {
+          room: 'test-room',
+          roomJoin: true,
+          canPublish: true,
+          canSubscribe: true
+        },
+        iss: apiKey,
+        exp: Math.floor(Date.now() / 1000) + 3600, // 1 hora
+        nbf: 0,
+        sub: 'test-user'
+      };
+
+      const encoder = new TextEncoder();
+      const keyData = encoder.encode(apiSecret);
+      
+      const key = await crypto.subtle.importKey(
+        'raw',
+        keyData,
+        { name: 'HMAC', hash: 'SHA-256' },
+        false,
+        ['sign']
+      );
+
+      const header = { alg: 'HS256', typ: 'JWT' };
+      
+      const base64url = (data) => {
+        return btoa(String.fromCharCode(...new Uint8Array(data)))
+          .replace(/\+/g, '-')
+          .replace(/\//g, '_')
+          .replace(/=/g, '');
+      };
+
+      const headerB64 = base64url(encoder.encode(JSON.stringify(header)));
+      const payloadB64 = base64url(encoder.encode(JSON.stringify(payload)));
+      const message = `${headerB64}.${payloadB64}`;
+      
+      const signature = await crypto.subtle.sign(
+        'HMAC',
+        key,
+        encoder.encode(message)
+      );
+
+      const token = `${message}.${base64url(signature)}`;
+      addLog(`✅ Token gerado (${token.length} chars)`, 'success');
+      return token;
+    }
+
+    async function testConnection() {
+      log.innerHTML = '';
+      addLog('🧪 Iniciando teste...', 'info');
+
+      const apiKey = document.getElementById('apiKey').value;
+      const apiSecret = document.getElementById('apiSecret').value;
+      const wsUrl = document.getElementById('wsUrl').value;
+
+      if (!apiSecret) {
+        addLog('❌ Por favor, cole o API Secret!', 'error');
+        return;
+      }
+
+      try {
+        // Gera o token
+        const token = await generateToken(apiKey, apiSecret);
+        
+        // Tenta conectar
+        addLog('🔌 Conectando ao LiveKit...', 'info');
+        const room = new LivekitClient.Room();
+
+        room.on(LivekitClient.RoomEvent.Connected, () => {
+          addLog('', 'success');
+          addLog('🎉🎉🎉 CONECTADO COM SUCESSO! 🎉🎉🎉', 'success');
+          addLog('', 'success');
+          addLog(`✅ Room SID: ${room.sid}`, 'success');
+          addLog(`✅ Room Name: ${room.name}`, 'success');
+          addLog('', 'success');
+          addLog('🚀 SUAS CREDENCIAIS ESTÃO CORRETAS!', 'success');
+          addLog('🚀 AGORA PODE ATUALIZAR NA VERCEL!', 'success');
+          
+          setTimeout(() => {
+            room.disconnect();
+            addLog('📊 Desconectado (teste concluído)', 'info');
+          }, 2000);
+        });
+
+        room.on(LivekitClient.RoomEvent.Disconnected, (reason) => {
+          addLog(`📊 Desconectado: ${reason}`, 'info');
+        });
+
+        room.on(LivekitClient.RoomEvent.ConnectionStateChanged, (state) => {
+          addLog(`🔄 Estado: ${state}`, 'info');
+        });
+
+        await room.connect(wsUrl, token, {
+          autoSubscribe: true,
+        });
+
+      } catch (error) {
+        addLog('', 'error');
+        addLog('❌ ERRO AO CONECTAR:', 'error');
+        addLog(`   ${error.message}`, 'error');
+        addLog('', 'error');
+        
+        if (error.message.includes('401') || error.message.includes('invalid')) {
+          addLog('🔴 ERRO 401: Token inválido', 'error');
+          addLog('', 'error');
+          addLog('📋 Possíveis causas:', 'error');
+          addLog('   1. API Secret incorreto', 'error');
+          addLog('   2. Copiou o secret com espaços extras', 'error');
+          addLog('   3. Key foi regenerada', 'error');
+          addLog('', 'error');
+          addLog('🔧 Solução:', 'info');
+          addLog('   1. Vá no LiveKit Dashboard', 'info');
+          addLog('   2. Delete a key atual', 'info');
+          addLog('   3. Crie uma NOVA key', 'info');
+          addLog('   4. Copie o secret com CUIDADO', 'info');
+          addLog('   5. Teste novamente aqui', 'info');
+        }
+      }
+    }
+  </script>
+</body>
+</html>

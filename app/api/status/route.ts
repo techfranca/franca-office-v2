@@ -9,16 +9,17 @@ export async function GET() {
   const wsUrl = process.env.NEXT_PUBLIC_LIVEKIT_URL || process.env.LIVEKIT_URL;
 
   if (!apiKey || !apiSecret || !wsUrl) {
+    console.error('❌ Chaves não configuradas:', { apiKey: !!apiKey, apiSecret: !!apiSecret, wsUrl: !!wsUrl });
     return NextResponse.json({ error: 'Chaves não configuradas' }, { status: 500 });
   }
 
-  const roomService = new RoomServiceClient(wsUrl, apiKey, apiSecret);
-  
-  // Salas corretas do seu page.tsx
-  const roomNames = ['reuniao', 'cafe', 'gabriel', 'bruna', 'leo', 'gui', 'davidson'];
-  const occupancy: Record<string, string[]> = {};
-
   try {
+    const roomService = new RoomServiceClient(wsUrl, apiKey, apiSecret);
+    
+    // ✅ Salas atualizadas com sala privada
+    const roomNames = ['reuniao', 'reuniao-privada', 'cafe', 'gabriel', 'bruna', 'leo', 'gui', 'davidson'];
+    const occupancy: Record<string, string[]> = {};
+
     await Promise.all(
       roomNames.map(async (room) => {
         try {
@@ -27,7 +28,7 @@ export async function GET() {
             .map((p) => p.identity)
             .filter((id) => id !== undefined);
         } catch (error) {
-          // Se a sala não existir (vazia), retorna lista vazia
+          // Se a sala não existir, retorna lista vazia
           occupancy[room] = [];
         }
       })
@@ -35,7 +36,7 @@ export async function GET() {
 
     return NextResponse.json(occupancy);
   } catch (error) {
-    console.error("Erro ao buscar status:", error);
+    console.error("❌ Erro ao buscar status:", error);
     return NextResponse.json({ error: 'Falha ao buscar status' }, { status: 500 });
   }
 }
