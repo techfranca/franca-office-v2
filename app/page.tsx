@@ -110,10 +110,20 @@ export default function Home() {
   async function joinRoom(roomName: string, userNameToUse?: string) {
     const user = userNameToUse || authenticatedUser;
     
-    // 🔒 BLOQUEIO: Impede entrada na sala privada se estiver trancada
-    if (roomName === "reuniao-privada" && privateRoomLocked && currentRoom !== "reuniao-privada") {
-      notify('leave', '🔒 Sala Privada Trancada', 'Apenas membros dentro podem acessar');
-      return;
+    // 🔒 BLOQUEIO SERVER-SIDE: Verifica no servidor se a sala privada está trancada
+    if (roomName === "reuniao-privada" && currentRoom !== "reuniao-privada") {
+      try {
+        const checkRes = await fetch(`/api/check-room?room=${roomName}`);
+        const checkData = await checkRes.json();
+        
+        if (checkData.locked) {
+          notify('leave', '🔒 Sala Privada Trancada', 'Apenas membros dentro podem acessar');
+          return;
+        }
+      } catch (error) {
+        console.error('Erro ao verificar status da sala:', error);
+        // Em caso de erro, permite a entrada (fail-safe)
+      }
     }
     
     // 1️⃣ LIMPA O TOKEN (força desmontagem do LiveKitRoom)
